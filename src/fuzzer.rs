@@ -34,6 +34,11 @@ impl ParamKind {
             "address" => Self::Address,
             "bytes" => Self::Bytes,
             "uint8" => Self::Uint(8),
+            "uint16" => Self::Uint(16),
+            "uint32" => Self::Uint(32),
+            "uint64" => Self::Uint(64),
+            "uint128" => Self::Uint(128),
+            "uint256" => Self::Uint(256),
             _ => unimplemented!(),
         }
     }
@@ -41,16 +46,34 @@ impl ParamKind {
     fn random(&self) -> Vec<u8> {
         let mut rng = rand::thread_rng();
         match &self {
-            ParamKind::Uint(8) => {
-                let r: u8 = rng.gen_range(0..=255);
-                let mut output = vec![0u8; 31];
-                output.append(&mut r.to_be_bytes().to_vec());
+            ParamKind::Uint(size) => {
+                let mut r = if *size == 8 {
+                    rng.gen::<[u8; 1]>().to_vec()
+                } else if *size == 16 {
+                    rng.gen::<[u8; 2]>().to_vec()
+                } else if *size == 32 {
+                    rng.gen::<[u8; 4]>().to_vec()
+                } else if *size == 64 {
+                    rng.gen::<[u8; 8]>().to_vec()
+                } else if *size == 128 {
+                    rng.gen::<[u8; 16]>().to_vec()
+                } else if *size == 256 {
+                    rng.gen::<[u8; 32]>().to_vec()
+                } else {
+                    unreachable!()
+                };
+                let padded_bytes_len = 32 - size / 8;
+                let mut output = vec![0u8; padded_bytes_len];
+                output.append(&mut r);
+                output
+            }
+            ParamKind::Address => {
+                let mut output = vec![0u8; 12];
+                output.extend_from_slice(&rng.gen::<[u8; 20]>());
                 output
             }
             ParamKind::Int(_)
-            | ParamKind::Address
             | ParamKind::Bytes
-            | ParamKind::Uint(_)
             | ParamKind::Bool
             | ParamKind::String
             | ParamKind::Array(_)

@@ -96,20 +96,40 @@ pub fn compile_solidity(target_name: &str, invariant_checker_name: &str) -> Comp
         })
 }
 
+pub fn deploy_invariant_checker(runner: &mut Evm, bytecode: Vec<u8>) -> Address {
+    runner.create(bytecode)
+}
+
+pub fn deploy_target(runner: &mut Evm, invariant_checker_address: Address) -> Address {
+    let deploy_target_calldata = function_selector("setUp()");
+    runner.call(invariant_checker_address, deploy_target_calldata.to_vec());
+    let target_calldata = function_selector("inv()");
+    let (_, target) = runner.call(invariant_checker_address, target_calldata.to_vec());
+    Address::from_slice(&target[12..32])
+}
+
+pub fn check_invariant(runner: &mut Evm, invariant_checker_address: Address) -> bool {
+    let invariant_check_function_signature = "invariant_neverFalse()";
+    let (_, result) = runner.call(
+        invariant_checker_address,
+        function_selector(invariant_check_function_signature).to_vec(),
+    );
+    assert_eq!(result.len(), 32);
+    // Interpret the last byte of `result` as boolean
+    assert_eq!(result[..31], vec![0; 31]);
+    result[31] == 1
+}
+
 /// Main fuzzer loop.
 fn main() {
     // Compile the Solidity source.
     let target_name = "InvariantBreaker";
     let invariant_checker_name = "InvariantTest";
-    let invariant_check_function = "invariant_neverFalse()";
     let output = compile_solidity(target_name, invariant_checker_name);
     let mut runner = Evm::default();
-    let invariant_checker_address = runner.create(output.invariant_checker.0);
-    let deploy_target_calldata = function_selector("setUp()");
-    runner.call(invariant_checker_address, deploy_target_calldata.to_vec());
-    let target_calldata = function_selector("inv()");
-    let (_, target) = runner.call(invariant_checker_address, target_calldata.to_vec());
-    let target_address = Address::from_slice(&target[12..32]);
+    let invariant_checker_address =
+        deploy_invariant_checker(&mut runner, output.invariant_checker.0);
+    let target_address = deploy_target(&mut runner, invariant_checker_address);
 
     let solidity_fuzzer = SolidityFuzzer::new(output.target_abi);
     let mut iterations: u64 = 0;
@@ -120,17 +140,12 @@ fn main() {
         let result = panic::catch_unwind(AssertUnwindSafe(|| {
             runner.call(target_address, calldata.clone());
         }))
-        .and_then(|_| {
-            let (_, result) = runner.call(
-                invariant_checker_address,
-                function_selector(invariant_check_function).to_vec(),
-            );
-            match result[31] {
-                0u8 => Err(Box::new(())),
-                1u8 => Ok(()),
-                _ => unreachable!(),
-            }
-        });
+        .and_then(
+            |_| match check_invariant(&mut runner, invariant_checker_address) {
+                true => Ok(()),
+                false => Err(Box::new(())),
+            },
+        );
         // If a panic is detected, report and exit.
         if result.is_err() {
             println!("Crash found after {} iterations!", iterations);
